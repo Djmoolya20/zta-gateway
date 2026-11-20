@@ -9,6 +9,10 @@ can rebuild trust through sustained good behaviour.
 
 from datetime import datetime, timedelta
 
+from app import config as cfg
+
+from app import config as cfg
+
 # ---------------------------------------------------------------------------
 # Config (imported from *app*.config as *cfg*)
 # ---------------------------------------------------------------------------
