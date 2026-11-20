@@ -144,7 +144,7 @@ if __name__ == "__main__":
         print("[enforcement] ARP injection unavailable on Windows/MinGW — "
               "quarantines will be recorded (DB + forensic log), not spoofed "
               "on the wire. True isolation validated on Linux/VM.")
-    threading.Thread(target=start_sniffing, daemon=True).start()
+    threading.Thread(target=start_sniffing, kwargs={"subnet": "192.168.50.0/24"}, daemon=True).start()
     threading.Thread(target=periodic_device_scan, daemon=True).start()
     threading.Thread(target=periodic_risk_scoring, daemon=True).start()
     app.run(host="0.0.0.0", port=5000)

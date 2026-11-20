@@ -4,6 +4,8 @@ from pathlib import Path
 from flask import Flask
 from .models import db, User
 from werkzeug.security import generate_password_hash
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 
 # Load .env file (non-overriding: env vars already set take precedence)
 try:
@@ -12,6 +14,14 @@ try:
 except ImportError:
     pass  # python-dotenv not installed; env vars must be set externally
 
+# Enable SQLite WAL mode for better concurrency (readers don't block writers)
+@event.listens_for(Engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    cursor.execute("PRAGMA busy_timeout=5000;")  # 5s busy timeout
+    cursor.close()
+
 def create_app():
     app = Flask(__name__)
     app.config["SECRET_KEY"] = "change-this-later"
@@ -19,6 +29,13 @@ def create_app():
     # live server's db/zta.db (which a soak-testing run.py may have open).
     app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
         "ZTA_DB", "sqlite:///../db/zta.db")
+
+    # Connection pool settings for SQLite (helps with concurrent threads)
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "pool_pre_ping": True,
+        "pool_recycle": 300,
+        "connect_args": {"check_same_thread": False},
+    }
 
     db.init_app(app)
 
