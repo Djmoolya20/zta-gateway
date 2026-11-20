@@ -16,6 +16,18 @@ class User(db.Model):
     # Phase 7: email verification (login also requires email_verified).
     email_verified = db.Column(db.Boolean, default=False)
     verification_token = db.Column(db.String(64), unique=True, nullable=True)
+    # Task 2: OTP-based email verification (additive nullable columns)
+    otp_hash = db.Column(db.String(128), nullable=True)          # bcrypt/scrypt hash
+    otp_expires_at = db.Column(db.DateTime, nullable=True)
+    otp_attempts = db.Column(db.Integer, default=0)
+    otp_last_sent = db.Column(db.DateTime, nullable=True)        # 60s resend cooldown
+    # Task 3: registration metadata (additive nullable columns)
+    registration_ip = db.Column(db.String(45), nullable=True)    # IPv4/IPv6
+    registration_ua = db.Column(db.String(500), nullable=True)   # user agent
+    claimed_mac = db.Column(db.String(20), nullable=True)        # optional device MAC
+    claimed_hostname = db.Column(db.String(120), nullable=True)
+    last_login = db.Column(db.DateTime, nullable=True)
+    last_login_ip = db.Column(db.String(45), nullable=True)
 
 
 class AuthEvent(db.Model):
