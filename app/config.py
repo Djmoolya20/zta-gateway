@@ -108,3 +108,9 @@ VERIFY_CODE_LOCK_MINUTES = int(
 # lookups and bandwidth windows, and how many top domains to roll up.
 ACTIVITY_LIMIT = int(os.environ.get("ZTA_ACTIVITY_LIMIT", "100"))
 ACTIVITY_TOP_DOMAINS = int(os.environ.get("ZTA_ACTIVITY_TOP_DOMAINS", "25"))
+
+# --- Escalation threshold reset (live-gateway Part C) ----------------------
+# After this many seconds of clean behavior, a prior ban is no longer counted
+# toward the escalated threshold.  Default 7 days; for a fast demo set
+# ZTA_ESCALATION_RESET_SECONDS=120 (2 minutes).
+ESCALATION_RESET_SECONDS = int(os.environ.get("ZTA_ESCALATION_RESET_SECONDS", 7 * 24 * 3600))

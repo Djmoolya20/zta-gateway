@@ -14,6 +14,7 @@ from .models import (User, Device, AuthEvent, Ban, PortalSession, Notification,
                      DNSLog, BandwidthLog, db)
 from .enforcement.quarantine import release_device
 from .enforcement.portal import grant_access, revoke_access as portal_revoke_access
+from .enforcement.escalation import get_trust_status
 from .capture.resolve import get_mac_for_ip, get_mac_for_ip_wait
 from .logging.forensic import log_forensic_event, LOG_PATH
 from .traceback.tracer import reconstruct_timeline
@@ -205,6 +206,12 @@ def register():
                 verification_code_hash=generate_password_hash(code),
                 verification_code_expires=datetime.utcnow() + timedelta(
                     minutes=cfg.VERIFY_CODE_TTL_MINUTES),
+                # Part A: enterprise context fields (safe defaults if omitted)
+                full_name=request.form.get("full_name", "Unregistered"),
+                department=request.form.get("department", "Other"),
+                device_description=request.form.get("device_description", "Device"),
+                access_reason=request.form.get("access_reason", "Network access requested"),
+                requested_access_level=request.form.get("requested_access_level", "standard"),
             ))
             db.session.commit()
         except IntegrityError:
@@ -215,8 +222,7 @@ def register():
         send_verification_email(current_app._get_current_object(),
                                 email, username, verify_url, code=code)
 
-        flash("Registration submitted. We emailed a 6-digit code and a link — "
-              "verify, then wait for admin approval.")
+        flash("Registration submitted. Check your email to verify your account.")
         return redirect(url_for("main.verify_code", username=username))
     return render_template("register.html")
 
@@ -398,6 +404,23 @@ def admin_dashboard():
     warned_macs = {n.mac for n in notifications
                    if n.kind == "medium_warning"
                    and n.created_at and n.created_at >= warn_cutoff}
+    # ---- annotate each device with its current trust status ----
+    for d in devices:
+        d.trust_status = get_trust_status(d.mac)
+        # Part A: annotate with user context from the linked User record
+        user = User.query.get(d.user_id) if d.user_id else None
+        if user:
+            d.user_full_name = user.full_name or "-"
+            d.user_department = user.department or "-"
+        else:
+            d.user_full_name = "-"
+            d.user_department = "-"
+    # ---- annotate each active ban with a human-readable reason ----
+    for b in active_bans:
+        b.risk_explanation = explain_risk(
+            b.identity_risk, b.device_risk, b.network_risk, b.behavior_risk,
+            (b.flagged_domains or '').split(','),
+        )
     return render_template("admin.html", devices=devices,
                            active_bans=active_bans,
                            recent_events=recent_events,

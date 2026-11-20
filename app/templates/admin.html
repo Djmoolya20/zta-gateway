@@ -97,6 +97,9 @@
       <th>Contact</th><th>Warned</th>
       <th>Flagged Domains</th>
       <th>Fan-out</th><th>Baseline</th><th>Traceback / Activity</th>
+      <th>Trust Status</th>
+      <th>User Full Name</th>
+      <th>User Department</th>
     </tr>
     {% for d in devices %}
     <tr style="background-color:
@@ -156,6 +159,9 @@
       <td><a href="{{ url_for('main.traceback_view', mac=d.mac) }}">timeline</a>
         &middot;
         <a href="{{ url_for('main.activity_view', mac=d.mac) }}">activity</a></td>
+      <td>{{ d.trust_status if hasattr(d, 'trust_status') else '—' }}</td>
+      <td>{{ d.user_full_name if hasattr(d, 'user_full_name') else '-' }}</td>
+      <td>{{ d.user_department if hasattr(d, 'user_department') else '-' }}</td>
     </tr>
     {% else %}
     <tr><td colspan="17" class="empty">No devices discovered yet.</td></tr>
@@ -168,7 +174,7 @@
     {% for b in active_bans %}
     <tr>
       <td>{{ b.mac }}</td>
-      <td>{{ b.reason }}</td>
+      <td>{{ explain_risk(b.identity_risk, b.device_risk, b.network_risk, b.behavior_risk, (b.flagged_domains or '').split(',')) }}</td>
       <td>{{ b.risk_score_at_ban }}</td>
       <td>{{ b.since }}</td>
       <td>

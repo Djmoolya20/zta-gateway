@@ -22,6 +22,13 @@ class User(db.Model):
     verification_attempts = db.Column(db.Integer, default=0)
     verification_locked_until = db.Column(db.DateTime, nullable=True)
 
+    # --- enterprise context (Part A) -----------------------------------------
+    full_name = db.Column(db.String(120))                # e.g. "Alice Smith"
+    department = db.Column(db.String(80))                # "Engineering", "Guest", "IoT/Lab", etc.
+    access_reason = db.Column(db.String(255))            # free‑text: why they need network access
+    device_description = db.Column(db.String(120))      # "Personal laptop", "Lab sensor", "Guest phone"
+    requested_access_level = db.Column(db.String(20), default="standard")  # standard / restricted / elevated
+
 
 class AuthEvent(db.Model):
     id = db.Column(db.Integer, primary_key=True)

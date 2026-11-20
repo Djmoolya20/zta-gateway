@@ -34,12 +34,17 @@
 <div class="wrap">
   <h1>Pending User Approvals</h1>
   <table>
-    <tr><th>Username</th><th>Email</th><th>Email Verified</th><th>Registered At</th><th>Actions</th></tr>
+    <tr><th>Full Name</th><th>Username</th><th>Email</th>
+    <th>Department</th><th>Device</th><th>Reason for Access</th>
+    <th>Registered</th><th>Actions</th></tr>
     {% for u in pending %}
     <tr>
+      <td>{{ u.full_name or '-' }}</td>
       <td>{{ u.username }}</td>
       <td>{{ u.email or '-' }}</td>
-      <td>{{ 'yes' if u.email_verified else 'no' }}</td>
+      <td>{{ u.department or '-' }}</td>
+      <td>{{ u.device_description or '-' }}</td>
+      <td style="max-width:250px;">{{ u.access_reason or '-' }}</td>
       <td>{{ u.registered_at }}</td>
       <td>
         {% if not u.email_verified %}
@@ -61,9 +66,9 @@
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="5" class="empty">No pending registration requests.</td></tr>
+    <tr><td colspan="8" class="empty">No pending registration requests.</td></tr>
     {% endfor %}
-  </table>
+</table>
 </div>
 </body>
 </html>

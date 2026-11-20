@@ -99,7 +99,12 @@ class _Base(unittest.TestCase):
         with self._capture_mail():
             r = c.post("/register", data={"username": username, "email": email,
                                           "password": password,
-                                          "confirm": password})
+                                          "confirm": password,
+                                          "full_name": "Alice Smith",
+                                          "department": "Engineering",
+                                          "device_description": "Personal laptop",
+                                          "access_reason": "Course project",
+                                          "requested_access_level": "standard"})
         return c, r
 
 
@@ -344,7 +349,10 @@ class MigrationTests(_Base):
             " id INTEGER PRIMARY KEY, username VARCHAR(80) UNIQUE NOT NULL,"
             " email VARCHAR(120), password_hash VARCHAR(200) NOT NULL,"
             " status VARCHAR(20), registered_at DATETIME, is_admin BOOLEAN,"
-            " email_verified BOOLEAN, verification_token VARCHAR(64))")
+            " email_verified BOOLEAN, verification_token VARCHAR(64),"
+            " full_name VARCHAR(120), department VARCHAR(80),"
+            " access_reason VARCHAR(255), device_description VARCHAR(120),"
+            " requested_access_level VARCHAR(20))")
         con.commit()
         con.close()
 
