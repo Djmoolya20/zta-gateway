@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ZTA Gateway — Verify Email (OTP)</title>
+  <style>
+    body { font-family: sans-serif; max-width: 420px; margin: 60px auto; }
+    input { width: 100%; padding: 8px; margin: 6px 0 14px; box-sizing: border-box; }
+    button { padding: 8px 18px; background: #337ab7; color: #fff; border: none;
+             border-radius: 4px; cursor: pointer; }
+    button:disabled { background: #999; cursor: not-allowed; }
+    a { color: #337ab7; }
+    h1 { font-size: 1.4em; }
+    .error { background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24;
+             padding: 10px; margin-bottom: 16px; border-radius: 4px; }
+    .message { background: #d4edda; border: 1px solid #c3e6cb; color: #155724;
+               padding: 10px; margin-bottom: 16px; border-radius: 4px; }
+    .otp-input { letter-spacing: 0.5em; text-align: center; font-size: 1.5em; }
+    .cooldown { font-size: 0.9em; color: #666; margin-top: -10px; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <h1>Verify your email</h1>
+  <p>A 6-digit verification code has been sent to <b>{{ email or '(enter email below)' }}</b>.</p>
+  <p>Check your inbox (or the server console in lab mode).</p>
+
+  {% if error %}
+    <div class="error">{{ error }}</div>
+  {% endif %}
+  {% if message %}
+    <div class="message">{{ message }}</div>
+  {% endif %}
+
+  <form method="POST" action="{{ url_for('main.verify_otp') }}">
+    <input type="hidden" name="email" value="{{ email }}">
+    <label>Enter 6-digit code</label>
+    <input type="text" name="otp" class="otp-input" maxlength="6" pattern="\d{6}" placeholder="123456" required autofocus>
+    <button type="submit">Verify</button>
+  </form>
+
+  <form method="POST" action="{{ url_for('main.resend_otp') }}" style="margin-top: 16px;">
+    <input type="hidden" name="email" value="{{ email }}">
+    <button type="submit" id="resendBtn">Resend code</button>
+  </form>
+
+  <p class="cooldown" id="cooldownMsg" style="display:none;"></p>
+  <p><a href="{{ url_for('main.login') }}">&laquo; Back to login</a></p>
+
+  <script>
+    // Simple 60s resend cooldown countdown
+    (function() {
+      const btn = document.getElementById('resendBtn');
+      const msg = document.getElementById('cooldownMsg');
+      let cooldown = {{ 60 if not can_resend else 0 }};
+
+      function startCooldown(seconds) {
+        cooldown = seconds;
+        btn.disabled = true;
+        msg.style.display = 'block';
+        updateMsg();
+        const timer = setInterval(function() {
+          cooldown--;
+          if (cooldown <= 0) {
+            clearInterval(timer);
+            btn.disabled = false;
+            msg.style.display = 'none';
+          } else {
+            updateMsg();
+          }
+        }, 1000);
+      }
+
+      function updateMsg() {
+        msg.textContent = 'Resend available in ' + cooldown + 's...';
+      }
+
+      // Check for server-rendered cooldown
+      const errorDiv = document.querySelector('.error');
+      if (errorDiv) {
+        const match = errorDiv.textContent.match(/wait (\d+)s/);
+        if (match) {
+          startCooldown(parseInt(match[1]));
+        }
+      }
+
+      // Also handle successful resend response
+      const messageDiv = document.querySelector('.message');
+      if (messageDiv && messageDiv.textContent.includes('sent')) {
+        startCooldown(60);
+      }
+    })();
+  </script>
+</body>
+</html>
