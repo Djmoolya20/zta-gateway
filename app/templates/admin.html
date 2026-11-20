@@ -154,6 +154,33 @@
     <tr><td colspan="4" class="empty">No authentication events yet.</td></tr>
     {% endfor %}
   </table>
+
+  <h2>Registered Users</h2>
+  <table>
+    <tr><th>Username</th><th>Email</th><th>Verified</th><th>Status</th><th>Registered At</th><th>Reg. IP</th><th>Last Login</th><th>Linked Device</th></tr>
+    {% for u in users %}
+    <tr>
+      <td><a href="{{ url_for('main.admin_user_detail', user_id=u.id) }}">{{ u.username }}</a></td>
+      <td>{{ u.email or '-' }}</td>
+      <td>{% if u.email_verified %}<span style="color:#27ae60">&#10004;</span>{% else %}<span style="color:#c0392b">&#10008;</span>{% endif %}</td>
+      <td>
+        {% if u.status == 'approved' %}<span style="color:#27ae60;font-weight:bold">Approved</span>
+        {% elif u.status == 'pending' %}<span style="color:#d4ac0d;font-weight:bold">Pending</span>
+        {% else %}<span style="color:#c0392b;font-weight:bold">Rejected</span>{% endif %}
+      </td>
+      <td>{{ u.registered_at }}</td>
+      <td>{{ u.registration_ip or '-' }}</td>
+      <td>{{ u.last_login or 'Never' }}</td>
+      <td>
+        {% if u.claimed_mac %}
+          <a href="{{ url_for('main.admin_device_detail', mac=u.claimed_mac) }}">{{ u.claimed_mac }}</a>
+        {% else %}-{% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="empty">No users registered yet.</td></tr>
+    {% endfor %}
+  </table>
 </div>
 </body>
 </html>

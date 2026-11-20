@@ -1,0 +1,174 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="10">
+  <title>Device Detail — {{ device.mac }}</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; background: #f5f6f8; padding-bottom: 40px; }
+    nav { background: #2c3e50; padding: 12px 20px; }
+    nav a { color: #ecf0f1; margin-right: 18px; text-decoration: none; }
+    nav a:hover { text-decoration: underline; }
+    .wrap { max-width: 1000px; margin: 24px auto; padding: 0 20px; }
+    h2 { color: #2c3e50; border-bottom: 2px solid #2c3e50; padding-bottom: 6px; margin-top: 34px; }
+    table { border-collapse: collapse; width: 100%; background: #fff;
+            box-shadow: 0 1px 3px rgba(0,0,0,.12); margin-bottom: 24px; }
+    th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #eee; font-size: .92em; }
+    th { background: #2c3e50; color: #fff; }
+    tr:nth-child(even) { background: #fafafa; }
+    .detail-row { display: flex; margin: 8px 0; }
+    .detail-label { font-weight: bold; width: 200px; color: #2c3e50; }
+    .detail-value { color: #34495e; }
+    .badge-green { background: #27ae60; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: .85em; }
+    .badge-yellow { background: #d4ac0d; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: .85em; }
+    .badge-red { background: #c0392b; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: .85em; }
+    .score-bar { height: 20px; border-radius: 4px; display: inline-block; min-width: 100px; }
+    .score-low { background: #27ae60; }
+    .score-medium { background: #d68910; }
+    .score-high { background: #c0392b; }
+    .panel { background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 20px; margin-bottom: 24px; }
+  </style>
+</head>
+<body>
+<nav>
+  <a href="{{ url_for('main.admin_dashboard') }}">Dashboard</a>
+  <a href="{{ url_for('main.pending_users') }}">Pending Users</a>
+  <a href="{{ url_for('main.logout') }}">Logout</a>
+</nav>
+
+<div class="wrap">
+  <h1>Device Detail — {{ device.mac }}</h1>
+  <p><a href="{{ url_for('main.admin_dashboard') }}">&laquo; Back to dashboard</a></p>
+
+  <div class="panel">
+    <h2>Device Information</h2>
+    <div class="detail-row"><span class="detail-label">MAC:</span><span class="detail-value">{{ device.mac }}</span></div>
+    <div class="detail-row"><span class="detail-label">IP:</span><span class="detail-value">{{ device.ip or '-' }}</span></div>
+    <div class="detail-row"><span class="detail-label">Hostname:</span><span class="detail-value">{{ device.hostname or '-' }}</span></div>
+    <div class="detail-row"><span class="detail-label">User:</span><span class="detail-value">
+      {% if user %}<a href="{{ url_for('main.admin_user_detail', user_id=user.id) }}">{{ user.username }}</a>{% else %}{{ device.user or '-' }}{% endif %}
+    </span></div>
+    <div class="detail-row"><span class="detail-label">Status:</span><span class="detail-value">
+      {% if device.status == 'approved' %}<span class="badge-green">Approved</span>
+      {% elif device.status == 'banned' %}<span class="badge-red">Banned</span>
+      {% else %}<span class="badge-yellow">Unknown</span>{% endif %}
+    </span></div>
+    <div class="detail-row"><span class="detail-label">First Seen:</span><span class="detail-value">{{ device.first_seen }}</span></div>
+    <div class="detail-row"><span class="detail-label">Last Seen:</span><span class="detail-value">{{ device.last_seen }}</span></div>
+    <div class="detail-row"><span class="detail-label">Fan-out:</span><span class="detail-value">{{ device.fan_out }}</span></div>
+  </div>
+
+  <div class="panel">
+    <h2>Risk Breakdown</h2>
+    <table>
+      <tr><th>Dimension</th><th>Score</th><th>Weight</th><th>Contribution</th><th>Explanation</th></tr>
+      <tr>
+        <td>Identity Risk</td>
+        <td><div class="score-bar score-{{ 'low' if device.identity_risk < 35 else ('medium' if device.identity_risk < 70 else 'high') }}" style="width: {{ device.identity_risk }}%">{{ device.identity_risk }}</div></td>
+        <td>20%</td>
+        <td>{{ (device.identity_risk * 0.20) | round(1) }}</td>
+        <td>Failed login attempts in last 15 min × 15 (capped at 100)</td>
+      </tr>
+      <tr>
+        <td>Device Risk</td>
+        <td><div class="score-bar score-{{ 'low' if device.device_risk < 35 else ('medium' if device.device_risk < 70 else 'high') }}" style="width: {{ device.device_risk }}%">{{ device.device_risk }}</div></td>
+        <td>20%</td>
+        <td>{{ (device.device_risk * 0.20) | round(1) }}</td>
+        <td>Unknown=60, Banned=100, Approved<24h=30, Approved>24h=0</td>
+      </tr>
+      <tr>
+        <td>Network Risk</td>
+        <td><div class="score-bar score-{{ 'low' if device.network_risk < 35 else ('medium' if device.network_risk < 70 else 'high') }}" style="width: {{ device.network_risk }}%">{{ device.network_risk }}</div></td>
+        <td>25%</td>
+        <td>{{ (device.network_risk * 0.25) | round(1) }}</td>
+        <td>Blocklisted domains (×40, max 80) + suspicious ports (×20, max 20)</td>
+      </tr>
+      <tr>
+        <td>Behavior Risk</td>
+        <td><div class="score-bar score-{{ 'low' if device.behavior_risk < 35 else ('medium' if device.behavior_risk < 70 else 'high') }}" style="width: {{ device.behavior_risk }}%">{{ device.behavior_risk }}</div></td>
+        <td>35%</td>
+        <td>{{ (device.behavior_risk * 0.35) | round(1) }}</td>
+        <td>Z-score vs per-device baseline (flow 40%, pkt 20%, byte 20%, dns 20%)</td>
+      </tr>
+      <tr style="font-weight: bold;">
+        <td>Total Risk</td>
+        <td><div class="score-bar score-{{ 'low' if device.total_risk < 35 else ('medium' if device.total_risk < 70 else 'high') }}" style="width: {{ device.total_risk }}%">{{ device.total_risk }}</div></td>
+        <td>100%</td>
+        <td>{{ device.total_risk }}</td>
+        <td>Weighted sum of four dimensions</td>
+      </tr>
+    </table>
+
+    {% if device.flagged_domains %}
+    <h3>Flagged Domains (Current Window)</h3>
+    <p>{{ device.flagged_domains }}</p>
+    {% endif %}
+
+    <h3>Risk Trend (Last 50 Windows)</h3>
+    {% if risk_history %}
+      <svg width="100%" height="150" viewBox="0 0 1000 150" style="background: #fff; border: 1px solid #eee; border-radius: 4px;">
+        {% set max_risk = risk_history | map(attribute='total_risk') | max if risk_history else 100 %}
+        {% set min_risk = risk_history | map(attribute='total_risk') | min if risk_history else 0 %}
+        {% set range_risk = max_risk - min_risk if max_risk != min_risk else 1 %}
+        {% set step_x = 1000 / (risk_history | length - 1) if risk_history | length > 1 else 1000 %}
+        <polyline fill="none" stroke="#2980b9" stroke-width="2" points="
+          {% for h in risk_history | reverse %}
+            {{ loop.index0 * step_x }},{{ 140 - ((h.total_risk - min_risk) / range_risk * 120) }}
+          {% endfor %}
+        " />
+        <line x1="0" y1="140" x2="1000" y2="140" stroke="#eee" stroke-width="1" />
+        <line x1="0" y1="20" x2="1000" y2="20" stroke="#eee" stroke-width="1" />
+        <rect x="0" y="0" width="1000" height="{{ 120 * (1 - (70 - min_risk) / range_risk) if 70 > min_risk else 0 }}" fill="#c0392b" opacity="0.05" />
+        <rect x="0" y="{{ 120 * (1 - (70 - min_risk) / range_risk) if 70 > min_risk else 0 }}" width="1000" height="{{ 120 * (70 - 35) / range_risk }}" fill="#d68910" opacity="0.05" />
+        <rect x="0" y="{{ 120 * (1 - (35 - min_risk) / range_risk) if 35 > min_risk else 120 }}" width="1000" height="{{ 120 * (35 - min_risk) / range_risk if 35 > min_risk else 120 }}" fill="#27ae60" opacity="0.05" />
+      </svg>
+      <p style="font-size: 0.85em; color: #7f8c8d; margin-top: 4px;">
+        Blue line = composite risk score per window. Red zone = HIGH (&ge;70), Yellow = MEDIUM (35-69), Green = LOW (<35).
+      </p>
+    {% else %}
+      <p style="color: #7f8c8d;">No risk history available yet.</p>
+    {% endif %}
+
+    {% if device.baseline %}
+    <h3>Baseline Status</h3>
+    <p>
+      {% if device.baseline.learning_complete %}
+        <span class="badge-green">Learned</span> ({{ device.baseline.sample_count }} samples)
+      {% else %}
+        <span class="badge-yellow">Learning</span> ({{ device.baseline.sample_count }}/20)
+      {% endif %}
+    </p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h2>Recent Risk History (Last 50 Windows)</h2>
+    {% if risk_history %}
+    <table>
+      <tr><th>Timestamp</th><th>Total</th><th>Identity</th><th>Device</th><th>Network</th><th>Behavior</th><th>Flagged Domains</th></tr>
+      {% for h in risk_history %}
+      <tr style="background-color: {{ 'salmon' if h.total_risk >= 70 else ('khaki' if h.total_risk >= 35 else 'lightgreen') }}">
+        <td>{{ h.timestamp }}</td>
+        <td><b>{{ h.total_risk }}</b></td>
+        <td>{{ h.identity_risk }}</td>
+        <td>{{ h.device_risk }}</td>
+        <td>{{ h.network_risk }}</td>
+        <td>{{ h.behavior_risk }}</td>
+        <td>{{ h.flagged_domains or '-' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p style="color: #7f8c8d;">No risk history available.</p>
+    {% endif %}
+  </div>
+
+  {% if user %}
+  <div class="panel">
+    <h2>Linked User</h2>
+    <p><a href="{{ url_for('main.admin_user_detail', user_id=user.id) }}">View user detail &raquo;</a></p>
+  </div>
+  {% endif %}
+</div>
+</body>
+</html>

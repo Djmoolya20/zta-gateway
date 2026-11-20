@@ -1,8 +1,16 @@
 import os
+from pathlib import Path
 
 from flask import Flask
 from .models import db, User
 from werkzeug.security import generate_password_hash
+
+# Load .env file (non-overriding: env vars already set take precedence)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=False)
+except ImportError:
+    pass  # python-dotenv not installed; env vars must be set externally
 
 def create_app():
     app = Flask(__name__)
