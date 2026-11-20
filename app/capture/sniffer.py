@@ -13,7 +13,7 @@ from scapy.all import sniff, IP, Ether, TCP, UDP, DNSQR, get_if_list, get_if_add
 from app.capture.buffer import packet_queue, queue_lock
 
 
-def _pick_interface(subnet="192.168.1.0/24"):
+def _pick_interface(subnet="192.168.50.0/24"):
     """Return the interface whose IP is on subnet, else Scapy's default."""
     net = ipaddress.ip_network(subnet, strict=False)
     for iface in get_if_list():
@@ -53,7 +53,7 @@ def handle_packet(pkt):
         packet_queue.append(record)
 
 
-def start_sniffing(iface=None, subnet="192.168.1.0/24"):
+def start_sniffing(iface=None, subnet="192.168.50.0/24"):
     if iface is None:
         iface = _pick_interface(subnet)
     print(f"[sniffer] listening on {iface}", flush=True)
