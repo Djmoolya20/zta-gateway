@@ -22,6 +22,7 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor.execute("PRAGMA busy_timeout=5000;")  # 5s busy timeout
     cursor.close()
 
+
 def create_app():
     app = Flask(__name__)
     app.config["SECRET_KEY"] = "change-this-later"
@@ -36,6 +37,16 @@ def create_app():
         "pool_recycle": 300,
         "connect_args": {"check_same_thread": False},
     }
+
+    # SMTP settings for real email delivery (from .env / environment).
+    # When MAIL_SERVER is unset, mail.py falls back to lab mode.
+    app.config["MAIL_SERVER"] = os.environ.get("MAIL_SERVER")
+    app.config["MAIL_PORT"] = int(os.environ.get("MAIL_PORT", "587"))
+    app.config["MAIL_USE_TLS"] = os.environ.get("MAIL_USE_TLS", "1") == "1"
+    app.config["MAIL_USE_SSL"] = os.environ.get("MAIL_USE_SSL", "0") == "1"
+    app.config["MAIL_USERNAME"] = os.environ.get("MAIL_USERNAME")
+    app.config["MAIL_PASSWORD"] = os.environ.get("MAIL_PASSWORD")
+    app.config["MAIL_DEFAULT_SENDER"] = os.environ.get("MAIL_DEFAULT_SENDER")
 
     db.init_app(app)
 

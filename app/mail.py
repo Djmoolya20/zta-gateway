@@ -18,11 +18,20 @@ from app.logging.forensic import log_forensic_event
 log = logging.getLogger("zta.mail")
 
 _LAST_VERIFY_URL = None   # exposes the most recent link for tests / console
+_LAST_NOTIFICATION = None  # exposes the most recent warning for tests / demos
 
 
 def get_last_verification_url():
     """Return the most recently generated verification URL (LAB MODE helper)."""
     return _LAST_VERIFY_URL
+
+
+def get_last_notification():
+    """Return the most recent risk/ban notice ({to, subject, body})
+
+    Mirrors get_last_verification_url(); used by tests and demos (LAB MODE).
+    """
+    return _LAST_NOTIFICATION
 
 
 def _build_smtp_config(app) -> Optional[dict]:
@@ -163,6 +172,35 @@ def send_otp_email(app, email_address, username, otp_code):
         log.warning("SMTP send failed (%s); falling back to console", exc)
 
     _lab_mode_fallback(username, email_address, f"OTP: {otp_code}", is_otp=True)
+    return "console"
+
+
+def send_risk_email(app, to, subject, body_text, body_html=None):
+    """Deliver a risk/ban notice.
+
+    Real SMTP when SMTP is configured; otherwise LAB MODE fallback prints
+    the message and writes an EMAIL_NOTICE forensic entry.
+    Returns "smtp" or "console". Raises only if the real SMTP send fails,
+    so the caller can record a failed row.
+    """
+    global _LAST_NOTIFICATION
+    _LAST_NOTIFICATION = {"to": to, "subject": subject, "body": body_text}
+
+    config = _build_smtp_config(app)
+    if config is not None:
+        try:
+            if _send_smtp(config, to, subject, body_text, timeout=10):
+                log.info("risk email sent to %s (%s)", to, subject)
+                return "smtp"
+        except Exception as exc:
+            log.warning("SMTP send failed for risk email (%s)", exc)
+            raise
+
+    # LAB MODE fallback — no live mail server. Message still reaches the
+    # operator via the console and the forensic audit log.
+    print(f"[mail:LAB-MODE] NOTICE {to}: {subject}\n{body_text}", flush=True)
+    log_forensic_event(to, "EMAIL_NOTICE",
+                       {"subject": subject, "body": body_text})
     return "console"
 
 
