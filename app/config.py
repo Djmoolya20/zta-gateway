@@ -73,3 +73,38 @@ NOTIFY_BAN_NOTICE = bool(int(os.environ.get("ZTA_NOTIFY_BAN_NOTICE", "1")))
 
 # Optional admin address copied on every notice (empty = no copy).
 NOTIFY_ADMIN_COPY = os.environ.get("ZTA_NOTIFY_ADMIN_COPY", "")
+
+# --- DNS interception (live-gateway fix F1) ----------------------------------
+# When on, all outbound DNS (udp/tcp 53) from internal clients is DNAT'd to the
+# gateway's own dnsmasq. Names therefore resolve before sign-in without any
+# hand-added FORWARD rule, and outside resolvers are unreachable -- which also
+# closes DNS tunnelling. Granted clients are redirected too, so their lookups
+# still appear in the activity monitor.
+DNS_INTERCEPT = bool(int(os.environ.get("ZTA_DNS_INTERCEPT", "1")))
+
+# --- Sign-in / approval hardening (live-gateway fix F4) ---------------------
+# Infra MACs are never gated and never auto-banned: the access point, the
+# admin's own laptop, printers. Comma-separated, matched case-insensitively.
+INFRA_MACS = tuple(
+    s.strip().lower() for s in
+    os.environ.get("ZTA_INFRA_MACS", "").split(",") if s.strip()
+)
+
+# Seconds to keep sending ARP requests for a client IP before giving up on
+# resolving its MAC (the neighbour cache may not have it yet right after DHCP).
+MAC_LOOKUP_TIMEOUT = float(os.environ.get("ZTA_MAC_LOOKUP_TIMEOUT", "2.0"))
+
+# --- Typed email verification code (live-gateway fix F3) --------------------
+# The 6-digit code emailed at registration: how long it stays valid, how many
+# wrong tries are allowed before it locks, and how long that lock lasts.
+VERIFY_CODE_TTL_MINUTES = int(
+    os.environ.get("ZTA_VERIFY_CODE_TTL_MINUTES", "15"))
+VERIFY_CODE_MAX_TRIES = int(os.environ.get("ZTA_VERIFY_CODE_MAX_TRIES", "5"))
+VERIFY_CODE_LOCK_MINUTES = int(
+    os.environ.get("ZTA_VERIFY_CODE_LOCK_MINUTES", "15"))
+
+# --- Website activity page (live-gateway F7.4) -------------------------------
+# How many rows the per-device activity page shows: the most recent DNS
+# lookups and bandwidth windows, and how many top domains to roll up.
+ACTIVITY_LIMIT = int(os.environ.get("ZTA_ACTIVITY_LIMIT", "100"))
+ACTIVITY_TOP_DOMAINS = int(os.environ.get("ZTA_ACTIVITY_TOP_DOMAINS", "25"))

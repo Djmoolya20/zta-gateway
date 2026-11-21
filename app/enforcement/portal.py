@@ -45,6 +45,7 @@ def _enabled():
 
 FORWARD_CHAIN = "ZTA_FORWARD"
 NAT_CHAIN = "ZTA_PREROUTING"
+INPUT_CHAIN = "ZTA_INPUT"
 
 
 def _ensure_forward_chain():
@@ -67,6 +68,33 @@ def _ensure_nat_chain():
     ok, _ = _run(["iptables", "-t", "nat", "-C", "PREROUTING", "-j", NAT_CHAIN])
     if not ok:
         _run(["iptables", "-t", "nat", "-I", "PREROUTING", "1", "-j", NAT_CHAIN])
+
+
+def _ensure_input_chain():
+    """Create ZTA_INPUT, accept the gateway's own services, jump from INPUT.
+
+    The redirect listener (tcp/80), the web UI (tcp/5000), the local resolver
+    (udp+tcp/53) and DHCP (udp/67) must stay reachable on the internal
+    interfaces. Doing it in code means the operator no longer has to hand-add
+    ``iptables -I INPUT -p tcp --dport 80 -j ACCEPT`` after every start (and
+    have it survive a restart). The chain is flushed and rebuilt; the INPUT
+    policy itself is never changed.
+    """
+    _run(["iptables", "-N", INPUT_CHAIN])
+    _run(["iptables", "-F", INPUT_CHAIN])
+    for iface in cfg.INTERNAL_IFACES:
+        for spec in (["-p", "udp", "--dport", "53"],
+                     ["-p", "tcp", "--dport", "53"],
+                     ["-p", "udp", "--dport", "67"],
+                     ["-p", "tcp", "--dport", "80"],
+                     ["-p", "tcp", "--dport", "5000"]):
+            _run(["iptables", "-A", INPUT_CHAIN, "-i", iface, *spec,
+                  "-j", "ACCEPT"])
+        _run(["iptables", "-A", INPUT_CHAIN, "-i", iface,
+              "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"])
+    ok, _ = _run(["iptables", "-C", "INPUT", "-j", INPUT_CHAIN])
+    if not ok:
+        _run(["iptables", "-I", "INPUT", "1", "-j", INPUT_CHAIN])
 
 
 def _ensure_default_drops():
@@ -95,18 +123,35 @@ def setup_gate():
     In nat ZTA_PREROUTING per interface:
       1. Granted MACs RETURN (skip redirect)
       2. Everything else DNAT tcp/80 to gateway:80
+      3. DNS (udp/tcp 53) DNAT to gateway:53 when ZTA_DNS_INTERCEPT=1
+
+    Services on the gateway itself (redirect tcp/80, web UI tcp/5000, local
+    resolver udp+tcp/53, DHCP udp/67) are accepted in ZTA_INPUT.
     """
     if not _enabled():
         return
 
     _ensure_forward_chain()
     _ensure_nat_chain()
+    _ensure_input_chain()
 
     # --- FORWARD chain ---
-    # Order per interface is: banned DROP  >  granted ACCEPT  >  default DROP.
-    # Bans are inserted at the top by sync_bans(); grants are appended by
-    # grant_access(); both then call _ensure_default_drops() so the catch-all
-    # DROP always ends up last (and thus never shadows a granted ACCEPT).
+    # F4.5: infrastructure MACs (access point, admin laptop) are never gated:
+    # ACCEPT in FORWARD before the default DROP, and RETURN in nat so they are
+    # never redirected.
+    for iface in cfg.INTERNAL_IFACES:
+        for mac in cfg.INFRA_MACS:
+            _run(["iptables", "-A", FORWARD_CHAIN,
+                  "-i", iface, "-m", "mac", "--mac-source", mac,
+                  "-j", "ACCEPT"])
+            _run(["iptables", "-t", "nat", "-A", NAT_CHAIN,
+                  "-i", iface, "-m", "mac", "--mac-source", mac,
+                  "-p", "tcp", "--dport", "80", "-j", "RETURN"])
+
+    # Order per interface is: banned DROP  >  infra/granted ACCEPT  >
+    # default DROP. Bans are inserted at the top by sync_bans(); grants are
+    # appended by grant_access(); both then call _ensure_default_drops() so the
+    # catch-all DROP always ends up last (and thus never shadows an ACCEPT).
     _ensure_default_drops()
 
     # --- nat PREROUTING chain ---
@@ -116,8 +161,26 @@ def setup_gate():
               "-i", iface, "-p", "tcp", "--dport", "80",
               "-j", "DNAT", "--to-dest", f"{cfg.GATEWAY_INTERNAL_IP}:80"])
 
+    # DNS interception: whatever resolver a client tries, the query is sent to
+    # the gateway's own dnsmasq. This replaces hand-added port-53 FORWARD rules
+    # and works for signed-out clients, which have everything else dropped.
+    if cfg.DNS_INTERCEPT:
+        gw = cfg.GATEWAY_INTERNAL_IP
+        for iface in cfg.INTERNAL_IFACES:
+            for proto in ("udp", "tcp"):
+                # Leave traffic already aimed at the gateway alone.
+                _run(["iptables", "-t", "nat", "-A", NAT_CHAIN,
+                      "-i", iface, "-p", proto, "--dport", "53",
+                      "-d", gw, "-j", "RETURN"])
+                _run(["iptables", "-t", "nat", "-A", NAT_CHAIN,
+                      "-i", iface, "-p", proto, "--dport", "53",
+                      "-j", "DNAT", "--to-dest", f"{gw}:53"])
+
     log.info("[portal] gate ON, interfaces: %s",
              ",".join(cfg.INTERNAL_IFACES))
+    if cfg.DNS_INTERCEPT:
+        log.info("[portal] DNS interception ON -> %s:53",
+                 cfg.GATEWAY_INTERNAL_IP)
 
 
 def teardown_gate():
@@ -129,11 +192,15 @@ def teardown_gate():
     _run(["iptables", "-D", "FORWARD", "-j", FORWARD_CHAIN])
     # Remove jump from PREROUTING
     _run(["iptables", "-t", "nat", "-D", "PREROUTING", "-j", NAT_CHAIN])
+    # Remove jump from INPUT
+    _run(["iptables", "-D", "INPUT", "-j", INPUT_CHAIN])
     # Flush and delete chains
     _run(["iptables", "-F", FORWARD_CHAIN])
     _run(["iptables", "-X", FORWARD_CHAIN])
     _run(["iptables", "-t", "nat", "-F", NAT_CHAIN])
     _run(["iptables", "-t", "nat", "-X", NAT_CHAIN])
+    _run(["iptables", "-F", INPUT_CHAIN])
+    _run(["iptables", "-X", INPUT_CHAIN])
 
 
 # --- grant / revoke -----------------------------------------------------------
@@ -248,5 +315,35 @@ def sync_bans(active_ban_macs):
 
     # 3. Keep the catch-all DROP last.
     _ensure_default_drops()
+
+
+# --- restart reconciliation ----------------------------------------------------
+
+def restore_from_db(app):
+    """Re-apply bans and unexpired grants after a restart (F2 / run.py).
+
+    ``setup_gate()`` rebuilds the chains from scratch, so everything that was
+    granted or banned before the restart must be replayed. Expired sessions are
+    marked "expired" and deliberately NOT re-granted. Returns
+    ``(bans_restored, sessions_restored)`` for the startup banner.
+    """
+    from datetime import datetime
+    from app.models import Ban, PortalSession, db
+
+    with app.app_context():
+        banned = [b.mac for b in Ban.query.filter_by(active=True).all()]
+        sync_bans(banned)
+
+        now = datetime.utcnow()
+        restored = 0
+        for ps in PortalSession.query.filter_by(state="granted").all():
+            if ps.expires_at and ps.expires_at < now:
+                ps.state = "expired"
+            else:
+                grant_access(ps.mac)
+                ps.last_activity = now
+                restored += 1
+        db.session.commit()
+    return len(banned), restored
 
     log.info("[portal] sync_bans: %d banned MACs", len(active_ban_macs))

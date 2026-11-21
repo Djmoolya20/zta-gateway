@@ -7,7 +7,8 @@ on each branch shows its head commit._
 
 | Branch | Contents | Head |
 |---|---|---|
-| **`integration/all-features`** | **Everything merged** — Option A + Wi-Fi AP + portal gate + email warning + demo monitoring. Use this branch for live testing. | `566b78a` |
+| **`fix/live-gateway`** | **Live-gateway fixes (work in progress).** Branch off `integration/all-features`; batch 1 = DNS interception + `ZTA_INPUT` chain + Flask-Mail dep + `deploy/verify_gate.sh`/`gateway-up.sh`/systemd unit; batch 2 = typed verify code + migration + ARP retry + status pages + infra MACs + restart replay; batch 3 = per-device Website Activity page. | `81ba40e` |
+| **`integration/all-features`** | **Everything merged** — Option A + Wi-Fi AP + portal gate + email warning + demo monitoring. Use this branch for live testing. | `f7c46dc` |
 | `main` (tag `v1.0-final`) | Option **B** submission — ARP quarantine, recorded-only on Windows | `1f9399a` |
 | `feature/option-a-inline` | Option **A** inline gateway — iptables DROP, Scapy ARP discovery, Linux neighbour table, Kali dual-NIC constants | `6fdc1d9` |
 | `feature/wifi-ap` | Wi-Fi AP (hostapd) mode for the inline gateway | `8f732c1` |
@@ -29,6 +30,40 @@ import). `admin.html` and `.gitignore` auto-merged. All 125 tests pass.
 - Portal-session restart behaviour: still open (currently re-grants non-expired sessions).
 
 ## Open items
+- **`fix/live-gateway` batch 1 — DONE** (commit `087bb99`, pushed). F1 (permanent
+  DNS interception in `nat ZTA_PREROUTING` + a `ZTA_INPUT` chain that accepts
+  53/67/80/5000, so the hand-typed `iptables -I INPUT -p tcp --dport 80 -j ACCEPT`
+  is no longer needed), F3.1 (`Flask-Mail` added to `requirements.txt` — its
+  absence meant mail always ran in lab mode; `[mail]` startup banner), F2.3
+  (banner reports restored bans/sessions), F5 (`deploy/verify_gate.sh`),
+  F6 (`deploy/gateway-up.sh`, `deploy/zta-gateway.service`, `deploy/zta.env.example`).
+- **`fix/live-gateway` batch 2 — DONE.** F3.5 typed 6-digit verification code
+  (`/verify-code`, hashed, 15-min expiry, 5 tries then a 15-min lock) with the
+  emailed link kept as an alternative and an admin **Mark email verified** button
+  on Pending Users; F3.7 additive `ALTER TABLE` migration so an existing
+  `db/zta.db` gains the new `user` columns (no data loss); F4.1 ARP-retry MAC
+  lookup (`get_mac_for_ip_wait`, `ZTA_MAC_LOOKUP_TIMEOUT`); F4.2/F4.3 distinct
+  status pages ("verify first" / "waiting for admin approval" / "you are
+  connected" / "device not recognized yet"); F4.5 `ZTA_INFRA_MACS` (never gated,
+  never auto-banned: ACCEPT + nat RETURN in `setup_gate`, skip in
+  `quarantine_device`, bypass in the middleware); F2 restart reconciliation
+  extracted to `portal.restore_from_db()` and unit-tested (live grants replayed,
+  bans kept, expired sessions marked expired and NOT re-granted).
+  New file `tests/test_live_gateway.py` (14 tests).
+- **Whole suite now 159 passing:** `test_phase6` 26 · `test_phase7` 34 ·
+  `test_integration` 35 · `test_portal` 13 · `test_notify` 20 ·
+  `test_discovery` 10 · `test_live_gateway` 21.
+- **`fix/live-gateway` batch 3 — F7.4 DONE** (commit `81ba40e`): per-device
+  **Website Activity** page at `/admin/device/<mac>/activity`. Read-only view
+  over the Phase 7 audit trail the scoring loop already writes — top domains
+  (hits + blocklisted marker), the most recent DNS lookups (flagged rows
+  highlighted), and bytes sent/received per 30s window. Links added from the
+  dashboard device row (`timeline · activity`) and from the traceback page.
+  Config: `ZTA_ACTIVITY_LIMIT` (100), `ZTA_ACTIVITY_TOP_DOMAINS` (25).
+  `test_live_gateway.py` 14 → 21.
+- **`fix/live-gateway` batch 3 — still TODO:** run the live client matrix on the
+  Kali gateway, then merge into `integration/all-features` and tag `v2.0-demo`
+  (leave `main`/`v1.0-final` alone).
 - **Portal gate (P3.2):** live test matrix on the Pi/Kali gateway + a spare device.
 - **Email warning (Item 9):** live test on the gateway (email only reaches the owner, not the device).
 - **Demo monitoring:** live test of the feed + toast on the inline gateway.
@@ -62,19 +97,22 @@ import). `admin.html` and `.gitignore` auto-merged. All 125 tests pass.
   lease but is not redirected, check, in order:** (1) branch is
   `integration/all-features`; (2) `ZTA_PORTAL_GATE=1` exported; (3) started with
   `sudo`; (4) `ZTA_INTERNAL_IFACES` contains the client's NIC (`eth1`);
-  (5) `sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT` (the code does **not**
-  add this itself); (6) `sudo iptables -t nat -S ZTA_PREROUTING` shows a
-  `DNAT … --dport 80` for that NIC and `sudo ss -lntp | grep :80` shows the
-  listener.
+  (5) on `fix/live-gateway` the code creates `ZTA_INPUT` itself — no manual
+  `iptables -I INPUT` needed (older branches: add it by hand); (6) `sudo iptables
+  -t nat -S ZTA_PREROUTING` shows a `DNAT … --dport 80` for that NIC and
+  `sudo ss -lntp | grep :80` shows the listener. Fastest check:
+  `sudo ./deploy/verify_gate.sh`.
 - Full live runbook: `docs/RUNBOOK-KALI-OPTIONA.md`.
 
 ## How to run
 - Windows dev box: `./venv/bin/python run.py` → http://127.0.0.1:5000/login  (`admin` / `admin123`), MinGW venv (`bin/`, not `Scripts/`).
 - Kali inline: `sudo venv/bin/python run.py`.
 - Tests (run **sequentially**, they share `db/zta_test.db`): on
-  `integration/all-features` → `tests/test_phase6.py` (26) · `tests/test_phase7.py`
-  (34) · `tests/test_integration.py` (35) · `tests/test_portal.py` (10) ·
-  `tests/test_notify.py` (20) = **125, all passing**.
+  `fix/live-gateway` / `integration/all-features` → `tests/test_phase6.py` (26) ·
+  `tests/test_phase7.py` (34) · `tests/test_integration.py` (35) ·
+  `tests/test_portal.py` (13) · `tests/test_notify.py` (20) ·
+  `tests/test_discovery.py` (10) · `tests/test_live_gateway.py` (21) =
+  **159, all passing**.
   They are standalone scripts, not pytest — run `./venv/bin/python tests/<file>.py`.
   (`test_portal`/`test_notify` are unittest-style; the 95-count suites print `TOTAL`.)
 

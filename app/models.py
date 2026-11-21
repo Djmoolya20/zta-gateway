@@ -21,6 +21,11 @@ class User(db.Model):
     otp_expires_at = db.Column(db.DateTime, nullable=True)
     otp_attempts = db.Column(db.Integer, default=0)
     otp_last_sent = db.Column(db.DateTime, nullable=True)        # 60s resend cooldown
+    # F3: typed 6-digit code alternative to the link (hashed, single use, 15-min expiry).
+    verification_code_hash = db.Column(db.String(200), nullable=True)
+    verification_code_expires = db.Column(db.DateTime, nullable=True)
+    verification_attempts = db.Column(db.Integer, default=0)
+    verification_locked_until = db.Column(db.DateTime, nullable=True)
     # Task 3: registration metadata (additive nullable columns)
     registration_ip = db.Column(db.String(45), nullable=True)    # IPv4/IPv6
     registration_ua = db.Column(db.String(500), nullable=True)   # user agent

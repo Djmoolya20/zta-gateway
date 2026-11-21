@@ -1,7 +1,9 @@
 # Combined Runbook — portal gate + email warning + live monitoring
 
-Branch: **`integration/all-features`** (Option A inline + Wi-Fi AP + portal gate +
-email warning + demo monitoring, all in one).
+Branch: **`fix/live-gateway`** (or **`integration/all-features`** before the
+live-gateway fixes) — Option A inline + Wi-Fi AP + portal gate + email warning +
+demo monitoring, all in one, plus the live-gateway hardening (DNS interception,
+typed verification code, sign-in hardening).
 
 This is the runbook for the **full demo**: a client device is captured by the
 network-level captive portal, must register → verify → be approved → sign in
@@ -64,9 +66,23 @@ cp .env.example .env
 nano .env        # MAIL_SERVER / MAIL_USERNAME / MAIL_PASSWORD / MAIL_DEFAULT_SENDER
 ```
 
-With no `.env`, the app runs in **lab mode**: verification links and warnings are
-printed to the console and the forensic log instead of emailed. Fine for the
-demo — you just read the links from the terminal.
+With no `.env`, the app runs in **lab mode**: verification links, 6-digit codes
+and warnings are printed to the console and the forensic log instead of emailed.
+Fine for the demo — you just read the code/link from the terminal. The `[mail]`
+startup banner tells you which mode is active.
+
+**Verification has two paths** (a phone on the captive portal has no internet to
+read its own email, so both matter):
+
+1. **6-digit code** — after registering, the portal opens `/verify-code`; the
+   user types the code from any device with internet. Hashed in the database,
+   15-minute expiry, single use, and locked for 15 minutes after 5 wrong tries.
+2. **Link** — the emailed `http://192.168.50.1:5000/verify/…` link, opened while
+   the phone is on the gateway network.
+
+If SMTP is unavailable, an admin can use **Mark email verified** on *Pending
+Users* (logged to the forensic log). It does **not** skip the separate admin
+approval step.
 
 ---
 
@@ -120,9 +136,6 @@ or phone). Replace `/tmp/rules.bak` with the rollback you actually want.
 ## 5. Start the gateway
 
 ```bash
-# the port-80 redirect listener needs INPUT open (the code does NOT add this)
-sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-
 sudo ZTA_PORTAL_GATE=1 \
      ZTA_INTERNAL_IFACES=eth1 \
      ZTA_UPLINK_IFACE=eth0 \
@@ -130,12 +143,20 @@ sudo ZTA_PORTAL_GATE=1 \
      venv/bin/python run.py
 ```
 
+You no longer need to hand-add `iptables -I INPUT -p tcp --dport 80 -j ACCEPT`:
+`setup_gate()` now builds a `ZTA_INPUT` chain that accepts the redirect (80),
+the web UI (5000), DNS (53) and DHCP (67) on the internal interfaces, and opens
+DNS interception in `nat` (see §6). Set `ZTA_DNS_INTERCEPT=0` to disable DNS
+interception.
+
 Expected startup banner:
 
 ```
 [enforcement] iptables DROP active (Linux, root)
+[mail] LAB MODE (no MAIL_SERVER configured)
 [sniffer] listening on eth1
 [portal] gate ON, interfaces: eth1
+[portal] restored 0 ban(s), 0 active session(s) (DNS intercept: on)
 [portal] redirect listener on :80 -> http://192.168.50.1:5000/login
  * Running on http://0.0.0.0:5000
 ```
@@ -143,20 +164,33 @@ Expected startup banner:
 - `recorded-only mode` instead of `iptables DROP active` → not root, or `ZTA_ENFORCE`
   is exported weirdly (`unset ZTA_ENFORCE`).
 - No `[portal]` lines → `ZTA_PORTAL_GATE=1` was not exported.
+- `[mail]` shows `SMTP ready` once Flask-Mail is installed and `.env` is set;
+  otherwise it shows `LAB MODE` and links print to this terminal.
 
 ---
 
 ## 6. Verify the rules (second terminal)
 
 ```bash
-sudo iptables -t nat -S ZTA_PREROUTING   # a DNAT … --dport 80 for eth1
+sudo ./deploy/verify_gate.sh            # all-in-one: PASS/FAIL for every check
+# or by hand:
+sudo iptables -t nat -S ZTA_PREROUTING   # DNAT :80 + udp/tcp :53 (DNS intercept)
 sudo iptables -S ZTA_FORWARD             # order: DROP(ban) → ACCEPT(grant) → DROP(default)
+sudo iptables -S ZTA_INPUT               # ACCEPT 53/67/80/5000 + ESTABLISHED
 sudo ss -lntp | grep ':80'               # the redirect listener is up
-sudo iptables -S INPUT | grep 'dport 80' # the INPUT ACCEPT from §5
 ```
 
 Rule order matters: the catch-all `DROP` **must be last** or granted devices get
 no internet (this was a real bug, fixed on this branch).
+
+**DNS interception.** `ZTA_DNS_INTERCEPT=1` (default) rewrites every outbound
+`udp/tcp 53` query from a client to `192.168.50.1:53`, so a signed-out device can
+still resolve names through the gateway's dnsmasq (and cannot reach an outside
+resolver, which also blocks DNS tunnelling). Signed-in devices are intercepted
+too, so their lookups still show up in the Website Activity page (§7 step 5). Limits:
+DNS-over-HTTPS and DNS-over-TLS are not affected — signed-out devices cannot use
+them because everything else is dropped, but signed-in devices can, which hides
+those lookups from the monitor.
 
 ---
 
@@ -168,16 +202,33 @@ Open the admin UI on the gateway itself (or from a granted device):
 1. **Capture** — plug the friend's laptop into `eth1`. It should get a
    `192.168.50.x` lease. Open any `http://…` page → redirected to the portal
    `/login`. (The OS may also pop its native "Sign in to network" prompt.)
-2. **Register** — on the device, register a user. Verify the email:
-   - real SMTP → link arrives in the inbox;
-   - lab mode → verification link is printed in the `run.py` terminal.
-3. **Approve** — in the admin dashboard, approve the pending user
-   (`ZTA_PORTAL_REQUIRE_APPROVAL` defaults to `1`).
-4. **Sign in** — on the device, log in. Within a few seconds it gets real
-   internet (a per-MAC ACCEPT is added above the default DROP).
+2. **Register** — on the device, register a user. The portal then opens
+   `/verify-code`. Verify **either** way:
+   - real SMTP → the code (and link) arrive in the inbox; type the code on the
+     phone (or open the link);
+   - lab mode → the code and link are printed in the `run.py` terminal
+     (`[mail:LAB-MODE] VERIFY … code=123456 url=…`).
+   The code is single-use and expires after 15 minutes; 5 wrong tries lock it
+   for 15 minutes. If SMTP is down, the admin can instead press **Mark email
+   verified** on *Pending Users* (lab fallback; logged).
+3. **Approve** — in the admin dashboard (`/admin/pending`), approve the pending
+   user (`ZTA_PORTAL_REQUIRE_APPROVAL` defaults to `1`).
+4. **Sign in** — on the device, log in. The gateway resolves the device MAC
+   (retrying with a real ARP request for up to `ZTA_MAC_LOOKUP_TIMEOUT` = 2 s if
+   the neighbour cache is empty), grants a per-MAC ACCEPT above the default
+   DROP, and shows a **"You are connected"** page. Distinct pages are shown if
+   the email is unverified, the account is not yet approved, or the device is
+   not recognized — no more bare `403` text.
 5. **Live monitoring** — the dashboard **Event Feed** fills with forensic
    events; the **Recent Notifications** table lists emails; a **ban toast**
    pops in the corner when a device is auto-quarantined.
+   - **Website Activity** — click **activity** in a device's row (or open
+     `/admin/device/<mac>/activity`) to see what that device actually did: top
+     domains resolved, the most recent DNS lookups with blocklisted ones
+     highlighted, and bytes per 30s window. This is **DNS only** — the sniffer
+     parses the DNS question, so URLs and page content are never visible, and
+     encrypted DNS (DoH/DoT) is not captured at all. Same data from a shell:
+     `sqlite3 db/zta.db "select domain,flagged from dns_log where mac='<mac>';"`
 6. **Risk → warning → ban** — from the *device*, force a MEDIUM then HIGH risk:
 
    ```bash
@@ -187,11 +238,48 @@ Open the admin UI on the gateway itself (or from a granted device):
    - first MEDIUM window → **email warning** to the owner (10-min cooldown);
    - risk ≥ 70 (`HIGH_RISK_BAN_THRESHOLD`) → **ban**: device goes offline,
      `DROP` rule appears, dashboard toast fires, owner gets a ban notice.
+
+   Two things decide whether the score actually reaches 70:
+   - **The baseline has to be learned first.** Behaviour scoring is flat `5`
+     until the device has `MIN_SAMPLES_FOR_BASELINE` = 20 windows (~10 minutes
+     of traffic), and identity+device+network alone cap out at **57**. No burst
+     can ban a device that has only just appeared. Watch `samples=` in the
+     scoring lines, or the **Baseline** column in the dashboard.
+   - **Feed all four dimensions in one window.** A port sweep only moves
+     behaviour and adds the suspicious ports (23/445/3389/6667) to network
+     risk; add a couple of blocklisted DNS lookups (40 pts each) and a few
+     failed logins (15 pts each, 15-min window) to push it over the line.
 7. **Unban / logout / TTL** —
    - dashboard **Unban** button → device must *sign in again* (unban resets
      approval to `unknown`);
    - **Logout** on the device → internet stops immediately;
    - idle past `ZTA_SESSION_TTL_MINUTES` (30) → session expires, access revoked.
+
+### Client acceptance matrix (run once with a spare phone)
+
+| State | Test | Expected |
+|---|---|---|
+| Signed out | `ping 8.8.8.8` | fails |
+| Signed out | open `http://neverssl.com` | redirects to the login page |
+| Signed out | `nslookup example.com` | resolves via `192.168.50.1` |
+| Signed in | open `http://neverssl.com` and an HTTPS site | both load |
+| Signed out again (logout) | same | blocked again |
+| Banned | any site | blocked even though signed in |
+
+### Infrastructure MACs (never gated)
+
+Set `ZTA_INFRA_MACS=aa:bb:cc:dd:ee:ff,…` (the access point and the admin's own
+laptop) so those devices are always allowed and never auto-banned. They get an
+ACCEPT + a redirect-exempt `RETURN` in `setup_gate()`, are skipped by
+`quarantine_device()`, and bypass the app-layer middleware.
+
+### After a reboot
+
+`setup_gate()` rebuilds the chains, then `restore_from_db()` replays the active
+bans and re-grants every unexpired session; expired sessions are marked expired
+and deliberately not re-granted. The banner prints
+`[portal] restored N ban(s), M active session(s)`. A signed-in phone keeps
+working across a restart within its TTL.
 
 ---
 
@@ -208,7 +296,6 @@ This sets up `hostapd` + dnsmasq on `wlan0` and adds the NAT/forwarding rules.
 Then start with the Wi-Fi interface:
 
 ```bash
-sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
 sudo ZTA_PORTAL_GATE=1 ZTA_INTERNAL_IFACES=wlan0 ZTA_UPLINK_IFACE=eth0 \
      venv/bin/python run.py
 ```
@@ -217,11 +304,48 @@ Device joins SSID **ZTA-Gateway** and follows the same §7 flow.
 
 ---
 
-## 9. Teardown
+## 9. Boot persistence (optional)
+
+Instead of re-typing §3, run it once and let systemd do it on every boot:
+
+```bash
+sudo cp deploy/zta.env.example /etc/zta.env      # edit the interface names if needed
+sudo ./deploy/gateway-up.sh                      # forwarding, NAT, dnsmasq drop-in
+
+sudo cp deploy/zta-gateway.service /etc/systemd/system/
+sudo sed -i "s#/opt/zta-gateway#$PWD#g" /etc/systemd/system/zta-gateway.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now zta-gateway
+sudo ./deploy/verify_gate.sh
+```
+
+`gateway-up.sh` is idempotent and runs as `ExecStartPre`, so a reboot brings the
+whole gate back without any hand-typed rules. Secrets stay in the repo's `.env`
+(`chmod 600`); `/etc/zta.env` holds only non-secret switches.
+
+> Save a real backup outside `/tmp` (it is wiped at reboot):
+> `sudo mkdir -p /root/zta-backups && sudo iptables-save | sudo tee /root/zta-backups/rules-$(date +%F-%H%M).v4`
+
+---
+
+## 10. Teardown
 
 ```bash
 # stop run.py (Ctrl-C), then kill the safety job if still pending and restore:
 sudo iptables-restore < /tmp/rules.bak
+
+# if you installed the systemd unit:
+sudo systemctl disable --now zta-gateway
+```
+
+`teardown_gate()` is **not** called by `run.py` — Ctrl-C leaves the `ZTA_FORWARD`,
+`ZTA_PREROUTING` and `ZTA_INPUT` chains in place (so access keeps being enforced
+while the app is down). To remove them explicitly:
+
+```bash
+sudo venv/bin/python -c "import app.enforcement.portal as p; p.teardown_gate()"
+# or, to go back to the pre-demo state entirely:
+sudo iptables-restore < /root/zta-backups/<your-file>.v4
 ```
 
 ---
@@ -230,10 +354,17 @@ sudo iptables-restore < /tmp/rules.bak
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Device gets `192.168.50.x` but no redirect | gate off / wrong branch / no INPUT :80 | `ZTA_PORTAL_GATE=1`; confirm `[portal]` banner; `iptables -I INPUT -p tcp --dport 80 -j ACCEPT` |
+| Device gets `192.168.50.x` but no redirect | gate off / wrong branch | `ZTA_PORTAL_GATE=1`; confirm the `[portal]` banner and `sudo iptables -S ZTA_INPUT` |
+| Device gets no DNS / names don't resolve when signed out | dnsmasq down, or DNS interception off | `systemctl status dnsmasq`; `sudo iptables -t nat -S ZTA_PREROUTING \| grep 53`; `ZTA_DNS_INTERCEPT=1` |
 | No DHCP lease at all (169.254.x.x) | dnsmasq not serving `eth1` | §3b; check `interface=eth1` + `bind-interfaces`, no stale `zta-ap.conf` |
 | Portal page loads but sign-in doesn't grant internet | catch-all DROP above the ACCEPT | must be fixed on this branch; verify `iptables -S ZTA_FORWARD` order |
 | No "Sign in" OS popup, but manual URL works | client used HTTPS first, or OS probe path unmatched | try `http://neverssl.com`; probes answer `/generate_204`, `/connecttest.txt`, `/hotspot-detect.html` |
-| No email arrives | no `.env` / wrong app password | lab mode prints link to console; else fix `MAIL_*` in `.env` |
-| Device never appears in dashboard | sniffer on wrong NIC / no ARP | `sudo ip neigh show dev eth1`; `sudo python app/discovery.py` |
+| No email arrives | no `.env` / wrong app password | lab mode prints the code + link to the console; else fix `MAIL_*` in `.env` |
+| Device stuck at "Verify your email first" | code not entered yet | open `/verify-code` on the phone and type the code; or admin **Mark email verified** |
+| Device stuck at "Waiting for admin approval" | not approved yet | approve it in `/admin/pending` |
+| "Could not identify your device" on sign-in | no ARP reply for the client IP | check `ip neigh show dev eth1`; raise `ZTA_MAC_LOOKUP_TIMEOUT` |
+| Access point / admin laptop gets gated | infra MAC not listed | set `ZTA_INFRA_MACS` to its MAC |
+| Device never appears in dashboard | sniffer on wrong NIC / no ARP | `sudo ip neigh show dev eth1`; `sudo ./deploy/verify_gate.sh <ip>` |
+| Activity page empty, but the device is browsing | browser uses DoH/DoT — those never touch port 53 | check `/admin/device/<mac>/activity` for any rows at all; plain DNS only |
+| Device never reaches HIGH, never banned | baseline not learned (`samples < 20`) or only one dimension spiked | watch `samples=` in the scoring lines; feed identity + network + behaviour in the same 30s window (§7 step 6) |
 | `sync_bans`-era symptom: new ban kills everyone | old code | fixed on this branch (see HANDOFF) |

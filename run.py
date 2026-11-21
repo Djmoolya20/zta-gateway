@@ -240,37 +240,27 @@ if __name__ == "__main__":
     }
     print(_mode_msgs.get(ENFORCEMENT_MODE, _mode_msgs["recorded"]), flush=True)
     _app = _get_app()
+    from app.mail import mail_mode
+    print(f"[mail] {mail_mode(_app)}", flush=True)
     threading.Thread(target=start_sniffing, daemon=True).start()
     threading.Thread(target=periodic_device_scan, daemon=True).start()
     threading.Thread(target=periodic_risk_scoring, daemon=True).start()
 
     # --- Portal gate startup reconciliation ---
     if cfg.PORTAL_GATE:
-        from app.enforcement.portal import setup_gate, sync_bans, grant_access
-        from app.models import PortalSession, Ban
-        from app.models import db
+        from app.enforcement.portal import setup_gate, restore_from_db
 
         setup_gate()
-        with _app.app_context():
-            banned_macs = [b.mac for b in Ban.query.filter_by(
-                active=True).all()]
-            sync_bans(banned_macs)
-
-            now = datetime.utcnow()
-            sessions = PortalSession.query.filter_by(
-                state="granted").all()
-            for ps in sessions:
-                if ps.expires_at and ps.expires_at < now:
-                    ps.state = "expired"
-                else:
-                    grant_access(ps.mac)
-                    ps.last_activity = now
-            db.session.commit()
+        bans_restored, sessions_restored = restore_from_db(_app)
 
         from app.portal_redirect import start_portal_listener
         start_portal_listener()
         print(f"[portal] gate ON, interfaces: "
               f"{','.join(cfg.INTERNAL_IFACES)}", flush=True)
+        print(f"[portal] restored {bans_restored} ban(s), "
+              f"{sessions_restored} active session(s) "
+              f"(DNS intercept: "
+              f"{'on' if cfg.DNS_INTERCEPT else 'off'})", flush=True)
 
         threading.Thread(target=periodic_session_expiry, daemon=True).start()
         threading.Thread(target=periodic_connected_check, daemon=True).start()
