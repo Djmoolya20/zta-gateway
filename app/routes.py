@@ -5,6 +5,48 @@ import os
 from functools import wraps
 from collections import defaultdict
 
+# --- Risk explanation helper (for admin dashboard) --------------------------
+
+def explain_risk(device):
+    """Return a human-readable breakdown of a device's risk score.
+
+    Uses the same weights as app/policy/composite.py.
+    """
+    weights = {
+        "identity": 0.20,
+        "device":   0.20,
+        "network":  0.25,
+        "behavior": 0.35,
+    }
+
+    parts = []
+
+    if device.identity_risk:
+        parts.append(f"Identity: {device.identity_risk}/100 (weight {weights['identity']:.0%}) — "
+                     f"failed logins from this IP in last 15 min")
+
+    if device.device_risk:
+        status_map = {0: "approved & aged", 30: "approved <24h", 60: "unknown", 100: "banned"}
+        desc = status_map.get(device.device_risk, "unknown")
+        parts.append(f"Device: {device.device_risk}/100 (weight {weights['device']:.0%}) — {desc}")
+
+    if device.network_risk:
+        flagged = device.flagged_domains.split(",") if device.flagged_domains else []
+        flagged = [f for f in flagged if f]
+        parts.append(f"Network: {device.network_risk}/100 (weight {weights['network']:.0%}) — "
+                     f"{len(flagged)} flagged domain(s): {', '.join(flagged[:3])}"
+                     f"{'...' if len(flagged) > 3 else ''}")
+
+    if device.behavior_risk:
+        parts.append(f"Behavior: {device.behavior_risk}/100 (weight {weights['behavior']:.0%}) — "
+                     f"deviation from learned baseline (flows, packets, bytes, DNS)")
+
+    total = device.total_risk or device.risk_score
+    level = device.risk_level or "LOW"
+
+    summary = f"Total: {total}/100 → {level}"
+    return {"summary": summary, "breakdown": parts, "total": total, "level": level}
+
 from flask import (Blueprint, render_template, request, redirect, session,
                    url_for, flash, current_app, jsonify)
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -618,6 +660,15 @@ def admin_dashboard():
     warned_macs = {n.mac for n in notifications
                    if n.kind == "medium_warning"
                    and n.created_at and n.created_at >= warn_cutoff}
+
+    # Attach risk explanation to each active ban for the template
+    for b in active_bans:
+        device = Device.query.filter_by(mac=b.mac).first()
+        if device:
+            b.risk_explanation = explain_risk(device)
+        else:
+            b.risk_explanation = {"summary": "Device not found", "breakdown": [], "total": 0, "level": "UNKNOWN"}
+
     return render_template("admin.html", devices=devices,
                            active_bans=active_bans,
                            recent_events=recent_events,
