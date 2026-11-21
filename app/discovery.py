@@ -1,35 +1,134 @@
 """Network discovery "sensor".
 
-On this Windows machine (MinGW/MSYS2 Python + Npcap) Scapy's ARP scan only
-receives the host's own ARP reply and misses every other host — see
-`scan_network_scapy` below. The reliable approach here is OS-native: send a
-directed broadcast ping to wake ARP resolution, then read the system ARP
-cache (`arp -a`). This is the same idea arp-scan implements, minus raw sockets.
+Two sensors, chosen per platform:
+  Linux (Option A inline gateway): Scapy's native ARP broadcast scan — the
+  originally-designed sensor, which works properly on native Linux (raw
+  sockets + root) but was deferred on Windows. Falls back to OS-native
+  ping + neighbor-table parse if Scapy errors.
+  Windows: Scapy only receives its own ARP reply on MinGW/Npcap, so the
+  reliable path is a directed-broadcast ping to wake ARP resolution, then
+  read the system ARP cache (`arp -a`).
 """
 import ipaddress
+import platform
+import re
 import subprocess
 
+from app import config as cfg
 from app.capture.resolve import local_ip_macs, parse_arp_table
 
+_IS_LINUX = platform.system() != "Windows"
 
-def scan_network(ip_range="192.168.1.0/24"):
+_STATION_LINE = re.compile(r"^Station\s+([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})",
+                           re.MULTILINE)
+
+# `iw dev <iface> info` reports "type AP" only for a real wireless AP.
+_AP_TYPE_LINE = re.compile(r"^\s*type\s+AP\b", re.MULTILINE)
+
+
+def _is_wireless_ap(iface):
+    """True only when *iface* is a wireless interface running in AP mode.
+
+    Needed because `iw dev <iface> station dump` exits 0 with **empty output**
+    on an interface that is not a wireless AP at all -- e.g. a wired NIC, where
+    the nl80211 device lookup returns ENODEV ("No such device (-19)"). Without
+    this guard that empty output is indistinguishable from "AP with no
+    associated stations", and scan_network() would filter out every discovered
+    device (which is exactly what happens on a wired eth1).
+    """
+    try:
+        proc = subprocess.run(["iw", "dev", iface, "info"],
+                              capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if proc.returncode != 0:
+        return False
+    return bool(_AP_TYPE_LINE.search(proc.stdout))
+
+
+def get_wifi_stations(iface=None):
+    """MACs currently associated to the Wi-Fi AP on *iface*.
+
+    Uses `iw dev <iface> station dump`, which reflects association state in
+    real time (a phone that leaves Wi-Fi disappears within seconds, unlike an
+    ARP/neighbor cache entry that lingers for minutes).
+
+    Returns a set of lowercase MACs, or None when this is not a wireless AP
+    interface (Windows, wired eth1, `iw` missing, no AP running). None means
+    "no Wi-Fi information available", so callers must not filter on it.
+    """
+    if not _IS_LINUX:
+        return None
+    iface = iface or cfg.INTERNAL_IFACE
+    # Confirm this really is an AP before trusting `station dump`; on a wired
+    # interface the dump succeeds with no output, which must NOT be read as
+    # "an AP with zero clients".
+    if not _is_wireless_ap(iface):
+        return None
+    try:
+        proc = subprocess.run(["iw", "dev", iface, "station", "dump"],
+                              capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return {m.lower() for m in _STATION_LINE.findall(proc.stdout)}
+
+
+def scan_network(ip_range=None, iface=None):
     """Return a list of {ip, mac} for hosts answering on the subnet.
 
-    Sends a couple of directed-broadcast ICMP pings so live hosts resolve
-    themselves in the OS ARP cache, then parses ``arp -a`` for this subnet
-    (shared parser: app/capture/resolve.py).
+    Unix path uses two independent sensors and **unions** them: the Scapy ARP
+    broadcast and the OS neighbour table (after a directed-broadcast ping to
+    wake sleepy clients). A device that satisfies only one of them -- e.g. a
+    power-saving phone that ignores the ARP broadcast but is already in
+    `ip neigh` -- is still discovered. The two are merged by MAC so a host is
+    never listed twice.
     """
+    if ip_range is None:
+        ip_range = cfg.INTERNAL_SUBNET
+
+    if not _IS_LINUX:
+        return _scan_ping_arp(ip_range)
+
+    try:
+        scapy_devices = scan_network_scapy(ip_range, iface or cfg.INTERNAL_IFACE)
+    except Exception:  # noqa: BLE001 — scapy may lack raw-socket access
+        scapy_devices = []
+
+    # Never register the gateway's own adapters as client devices.
+    try:
+        self_ips = set(local_ip_macs())
+    except Exception:  # noqa: BLE001 — scapy missing/lacking raw sockets
+        self_ips = set()
+
+    merged = {}
+    for d in list(scapy_devices) + _scan_ping_arp(ip_range):
+        if d["ip"] in self_ips:
+            continue
+        merged.setdefault(d["mac"].lower(), d)
+    devices = list(merged.values())
+
+    # Wi-Fi AP mode: only devices still associated count as connected.
+    stations = get_wifi_stations(iface or cfg.INTERNAL_IFACE)
+    if stations is not None:
+        devices = [d for d in devices if d["mac"].lower() in stations]
+    return devices
+
+
+def _scan_ping_arp(ip_range):
+    """Broadcast-ping wake + neighbor-table parse (works on both OSes)."""
     net = ipaddress.ip_network(ip_range, strict=False)
     broadcast = str(net.broadcast_address)
-    # -w 400 = 400 ms timeout per reply; two pings gives slow devices a chance.
-    subprocess.run(
-        ["ping", "-n", "2", "-w", "400", broadcast],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    if _IS_LINUX:
+        ping = ["ping", "-c", "2", "-W", "1", broadcast]
+    else:
+        ping = ["ping", "-n", "2", "-w", "400", broadcast]
+    subprocess.run(ping, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     seen = set()
     devices = []
-    # arp -a omits this machine itself, so merge in own adapter rows too.
+    # neighbor table omits this machine itself, merge in own adapter rows too.
     arp_entries = parse_arp_table()
     arp_entries.update(local_ip_macs())
     for ip, mac in arp_entries.items():
@@ -44,16 +143,18 @@ def scan_network(ip_range="192.168.1.0/24"):
     return devices
 
 
-def scan_network_scapy(ip_range="192.168.1.0/24"):
-    """Scapy ARP broadcast scan — the classic technique. Kept for reference.
+def scan_network_scapy(ip_range=None, iface=None):
+    """Scapy ARP broadcast scan — the classic technique (native Linux).
 
-    NOTE: On this machine (MSYS2/MinGW Python + Npcap) it only ever receives
-    replies from the host itself, so it is NOT used as the default sensor.
+    On Windows/MinGW+Npcap it only ever receives replies from the host
+    itself, so it is NOT used there (auto-falls back to _scan_ping_arp).
     """
+    if ip_range is None:
+        ip_range = cfg.INTERNAL_SUBNET
     from scapy.all import ARP, Ether, srp
 
     packet = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ip_range)
-    result = srp(packet, timeout=3, verbose=0)[0]
+    result = srp(packet, timeout=3, verbose=0, iface=iface)[0]
     devices = []
     for _sent, received in result:
         devices.append({"ip": received.psrc, "mac": received.hwsrc})
